@@ -30,4 +30,13 @@
 #define DISPLAY_MIRROR_X    false
 #define DISPLAY_MIRROR_Y    false
 
+// Relay Configuration (4 Channels for Lamps)
+#define RELAY_1_GPIO        GPIO_NUM_0
+#define RELAY_2_GPIO        GPIO_NUM_1
+#define RELAY_3_GPIO        GPIO_NUM_10
+#define RELAY_4_GPIO        GPIO_NUM_20
+
+// Touch Sensor Configuration (TTP223)
+#define TOUCH_SENSOR_GPIO   GPIO_NUM_21
+
 #endif // _BOARD_CONFIG_H_

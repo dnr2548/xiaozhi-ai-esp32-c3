@@ -1,14 +1,8 @@
 /**
- * ESP32-C3 with INMP441 Microphone, MAX98357A Speaker, and SSD1306 OLED
+ * ESP32-C3 with INMP441 Microphone, MAX98357A Speaker, SSD1306 OLED, 
+ * 4 Channel Relays (NVS State), and Touch Sensor (TTP223)
  * 
- * Wiring:
- * GPIO 5 - BCLK (shared by mic and speaker)
- * GPIO 6 - WS/LRC (shared by mic and speaker)
- * GPIO 4 - INMP441 SD (Mic Data In)
- * GPIO 7 - MAX98357A DIN (Speaker Data Out)
- * GPIO 3 - Push-to-talk button
- * GPIO 8 - OLED SDA
- * GPIO 9 - OLED SCL
+ * Pin mapping follows config.h definitions.
  */
 
 #include "wifi_board.h"
@@ -23,6 +17,9 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_ssd1306.h>
 #include <driver/i2c_master.h>
+#include <driver/gpio.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 
 #define TAG "Esp32c3Inmp441Board"
 
@@ -30,6 +27,67 @@ class Esp32c3Inmp441Board : public WifiBoard {
 private:
     Button boot_button_;
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
+    uint8_t lampStates[4] = {0, 0, 0, 0};
+
+    void SaveStatesToNVS() {
+        nvs_handle_t my_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+        if (err == ESP_OK) {
+            nvs_set_blob(my_handle, "lamp_states", lampStates, sizeof(lampStates));
+            nvs_commit(my_handle);
+            nvs_close(my_handle);
+        }
+    }
+
+    void LoadStatesFromNVS() {
+        nvs_handle_t my_handle;
+        esp_err_t err = nvs_open("storage", NVS_READONLY, &my_handle);
+        if (err == ESP_OK) {
+            size_t required_size = sizeof(lampStates);
+            nvs_get_blob(my_handle, "lamp_states", lampStates, &required_size);
+            nvs_close(my_handle);
+        }
+    }
+
+    void ApplyRelayHardwarePins() {
+        gpio_set_level(RELAY_1_GPIO, lampStates[0]);
+        gpio_set_level(RELAY_2_GPIO, lampStates[1]);
+        gpio_set_level(RELAY_3_GPIO, lampStates[2]);
+        gpio_set_level(RELAY_4_GPIO, lampStates[3]);
+    }
+
+    void InitializeRelaysAndTouch() {
+        // Inisialisasi NVS untuk status lampu
+        esp_err_t err = nvs_flash_init();
+        if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            nvs_flash_erase();
+            nvs_flash_init();
+        }
+        LoadStatesFromNVS();
+
+        // Konfigurasi Pin Relay sebagai Output (mengambil dari config.h)
+        gpio_config_t relay_conf = {};
+        relay_conf.intr_type = GPIO_INTR_DISABLE;
+        relay_conf.mode = GPIO_MODE_OUTPUT;
+        relay_conf.pin_bit_mask = (1ULL << RELAY_1_GPIO) | (1ULL << RELAY_2_GPIO) | 
+                                  (1ULL << RELAY_3_GPIO) | (1ULL << RELAY_4_GPIO);
+        relay_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        relay_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+        gpio_config(&relay_conf);
+
+        // Terapkan status terakhir dari memori
+        ApplyRelayHardwarePins();
+
+        // Konfigurasi Pin Sensor Sentuh sebagai Input
+        gpio_config_t touch_conf = {};
+        touch_conf.intr_type = GPIO_INTR_DISABLE;
+        touch_conf.mode = GPIO_MODE_INPUT;
+        touch_conf.pin_bit_mask = (1ULL << TOUCH_SENSOR_GPIO);
+        touch_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+        gpio_config(&touch_conf);
+
+        ESP_LOGI(TAG, "4 Channel Relays & Touch Sensor initialized successfully.");
+    }
 
     void InitializeI2c() {
         i2c_master_bus_config_t i2c_bus_cfg = {
@@ -49,7 +107,6 @@ private:
     }
 
     void InitializeButtons() {
-        // Press down to start listening, release to stop (push-to-talk)
         boot_button_.OnPressDown([this]() {
             Application::GetInstance().StartListening();
         });
@@ -57,7 +114,6 @@ private:
             Application::GetInstance().StopListening();
         });
         
-        // Click during startup to enter WiFi config mode
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
@@ -68,22 +124,14 @@ private:
 
 public:
     Esp32c3Inmp441Board() : boot_button_(BOOT_BUTTON_GPIO) {
-        ESP_LOGI(TAG, "Initializing ESP32-C3 INMP441 Board with OLED");
-        ESP_LOGI(TAG, "  BCLK: GPIO %d", AUDIO_I2S_GPIO_BCLK);
-        ESP_LOGI(TAG, "  WS:   GPIO %d", AUDIO_I2S_GPIO_WS);
-        ESP_LOGI(TAG, "  DIN:  GPIO %d (Mic)", AUDIO_I2S_GPIO_DIN);
-        ESP_LOGI(TAG, "  DOUT: GPIO %d (Speaker)", AUDIO_I2S_GPIO_DOUT);
-        ESP_LOGI(TAG, "  Button: GPIO %d", BOOT_BUTTON_GPIO);
-        ESP_LOGI(TAG, "  OLED: SDA=%d, SCL=%d (%dx%d)", 
-                 DISPLAY_SDA_PIN, DISPLAY_SCL_PIN, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        ESP_LOGI(TAG, "Initializing ESP32-C3 INMP441 Board with OLED, Relays & Touch");
         
         InitializeI2c();
         InitializeButtons();
+        InitializeRelaysAndTouch();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        // NoAudioCodecDuplex for INMP441 mic + MAX98357A speaker
-        // Uses same I2S bus with shared BCLK/WS
         static NoAudioCodecDuplex audio_codec(
             AUDIO_INPUT_SAMPLE_RATE, 
             AUDIO_OUTPUT_SAMPLE_RATE,
@@ -99,14 +147,12 @@ public:
         static Display* display = nullptr;
         
         if (display == nullptr) {
-            // Try to initialize SSD1306 OLED - first try 0x3C, then 0x3D
             uint8_t i2c_addresses[] = {0x3C, 0x3D};
             esp_lcd_panel_io_handle_t panel_io = nullptr;
             esp_lcd_panel_handle_t panel = nullptr;
             
             for (int i = 0; i < 2; i++) {
                 uint8_t addr = i2c_addresses[i];
-                ESP_LOGI(TAG, "Trying OLED at I2C address 0x%02X", addr);
                 
                 esp_lcd_panel_io_i2c_config_t io_config = {
                     .dev_addr = addr,
@@ -152,22 +198,30 @@ public:
                     continue;
                 }
                 
-                // Success!
                 ESP_LOGI(TAG, "OLED initialized at address 0x%02X", addr);
                 display = new OledDisplay(panel_io, panel, 
-                                          DISPLAY_WIDTH, DISPLAY_HEIGHT, 
-                                          DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+                                         DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+                                         DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
                 break;
             }
             
             if (display == nullptr) {
-                // OLED not found, use no display
                 ESP_LOGW(TAG, "OLED not found, continuing without display");
                 static NoDisplay no_display;
                 display = &no_display;
             }
         }
         return display;
+    }
+
+    // Fungsi Publik untuk Mengontrol Relay
+    void SetRelayState(int index, uint8_t state) {
+        if (index >= 0 && index < 4) {
+            lampStates[index] = state;
+            ApplyRelayHardwarePins();
+            SaveStatesToNVS();
+            ESP_LOGI(TAG, "Relay %d set to %s", index + 1, state ? "ON" : "OFF");
+        }
     }
 };
 

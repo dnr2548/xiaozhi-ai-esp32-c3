@@ -12,3 +12,8 @@ add_compile_options(-Wno-missing-field-initializers)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(xiaozhi)
 
+add_compile_options(-Wno-error=format -Wno-error=implicit-function-declaration)
+idf_component_get_property(emote_gfx_lib espressif2022__esp_emote_gfx COMPONENT_LIB)
+if(TARGET ${emote_gfx_lib})
+    target_compile_options(${emote_gfx_lib} PRIVATE -Wno-error=format)
+endif()
